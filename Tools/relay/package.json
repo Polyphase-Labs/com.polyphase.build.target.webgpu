@@ -1,0 +1,13 @@
+{
+  "name": "polyphase-webgl2-relay",
+  "version": "1.0.0",
+  "description": "WebSocket-to-UDP relay that gives Polyphase WebGL2 builds access to the engine's UDP multiplayer protocol.",
+  "main": "relay.js",
+  "scripts": {
+    "start": "node relay.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "private": true
+}

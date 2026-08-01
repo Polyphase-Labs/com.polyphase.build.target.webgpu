@@ -1,0 +1,282 @@
+# Makefile_WebGPU — Polyphase Web (WebGPU / Emscripten) build.
+#
+# Single-pass build: compiles the engine source tree + the Web addon runtime
+# (Runtime/Web) + the project's own Source into one single-threaded wasm
+# module (<name>.html + .js + .wasm). Mirrors Makefile_Dreamcast/Makefile_PSP
+# but uses emcc/em++.
+#
+# Run via the editor's Web build-target addon (which sources emsdk_env and
+# invokes this from <projectDir>/Intermediate/WebGPU/), OR manually inside a
+# shell that has the emsdk environment sourced:
+#
+#   . <emsdk>/emsdk_env.sh
+#   mkdir -p <projectDir>/Intermediate/WebGPU && cd <projectDir>/Intermediate/WebGPU
+#   emmake make -f <addon>/Makefile_WebGPU PROJECT_ROOT=<projectDir> -j8
+#
+# On Windows the addon invokes an MSYS2/devkitPro GNU make directly (after
+# `call emsdk_env.bat`), with M:/... style paths — both make and emcc accept
+# them.
+
+# Delete partial outputs on failure so a stale 0-byte .o can't satisfy the next
+# build's freshness check and silently break the link. (See Makefile_PSP.)
+.DELETE_ON_ERROR:
+
+# ---- Project root resolution ------------------------------------------------
+# 1. PROJECT_ROOT set on the make command line by the addon's GetCompileCommand.
+# 2. Walk up from CURDIR for a *.octp marker (manual `make -C` or Intermediate/).
+ifeq ($(origin PROJECT_ROOT), undefined)
+PROJECT_ROOT := $(strip \
+    $(if $(wildcard $(CURDIR)/*.octp),         $(CURDIR), \
+    $(if $(wildcard $(CURDIR)/../*.octp),      $(abspath $(CURDIR)/..), \
+    $(if $(wildcard $(CURDIR)/../../*.octp),   $(abspath $(CURDIR)/../..), \
+                                                ))))
+endif
+
+ifeq ($(strip $(PROJECT_ROOT)),)
+$(error Could not locate project root — no *.octp within 2 levels of $(CURDIR). \
+  Pass PROJECT_ROOT=/path/to/project on the make line.)
+endif
+
+# Strip trailing slash. `override` is REQUIRED — a command-line PROJECT_ROOT
+# beats a plain `:=` reassignment, so without override the patsubst is a no-op
+# and a trailing slash makes $(notdir) return empty -> ".html" link target.
+override PROJECT_ROOT := $(patsubst %/,%,$(PROJECT_ROOT))
+
+ifeq ($(wildcard $(PROJECT_ROOT)/*.octp),)
+$(error Resolved PROJECT_ROOT='$(PROJECT_ROOT)' but it has no *.octp file. \
+  Pass PROJECT_ROOT explicitly on the make line.)
+endif
+
+# TARGET is the project name — directory name of PROJECT_ROOT (NOT CURDIR,
+# which is Intermediate/WebGPU under the out-of-tree invocation).
+TARGET = $(notdir $(PROJECT_ROOT))
+
+# ---- Engine path resolution -------------------------------------------------
+POLYPHASE_PATH ?= $(shell \
+    p=$(PROJECT_ROOT); \
+    for i in 1 2 3 4 5 6; do \
+        p=$$(dirname $$p); \
+        if [ -f $$p/Polyphase.sln ]; then echo $$p; exit 0; fi; \
+    done; \
+    echo /opt/Polyphase )
+
+override POLYPHASE_PATH := $(patsubst %/,%,$(POLYPHASE_PATH))
+
+ifeq ($(wildcard $(POLYPHASE_PATH)/Engine/Source/Engine/Engine.h),)
+$(error POLYPHASE_PATH='$(POLYPHASE_PATH)' does not contain Engine/Source/Engine/Engine.h. \
+  Pass POLYPHASE_PATH=/path/to/polyphase-engine on the make line (the editor's Web \
+  addon does this automatically).)
+endif
+
+# ---- Emscripten toolchain ---------------------------------------------------
+# The addon's generated build script sources emsdk_env before invoking make, so
+# emcc/em++ are on PATH. Verify early with a clear error instead of 500
+# "command not found" lines.
+EMCXX ?= em++
+EMCC  ?= emcc
+ifeq ($(shell $(EMCXX) --version >/dev/null 2>&1 && echo ok),)
+$(error em++ is not on PATH. Source <emsdk>/emsdk_env.sh (or emsdk_env.bat) \
+  before invoking make — the editor's Web addon does this automatically.)
+endif
+
+ADDON_WEB_RUNTIME = $(PROJECT_ROOT)/Packages/com.polyphase.build.target.webgpu/Runtime/Web
+
+# ---- Engine-native addon injection ------------------------------------------
+# The editor writes Generated/AddonInject.mk before compiling; it DEFINEs
+# ADDON_SOURCES / ADDON_DEFINES / ADDON_INCDIR / ADDON_LIBDIR / ADDON_LIBS /
+# ADDON_CPPFILES_EXTRA for engine-target addons. `-include` is non-fatal.
+-include $(PROJECT_ROOT)/Generated/AddonInject.mk
+
+# ---- Source discovery -------------------------------------------------------
+SOURCES = \
+    $(POLYPHASE_PATH)/Engine/Source/Engine \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/Assets \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/Animation \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/Nodes \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/Nodes/3D \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/Nodes/Widgets \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/NodeGraph \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/NodeGraph/Nodes \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/NodeGraph/Domains \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/UI \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/Timeline \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/Timeline/Tracks \
+    $(POLYPHASE_PATH)/Engine/Source/Plugins \
+    $(POLYPHASE_PATH)/Engine/Source/System \
+    $(POLYPHASE_PATH)/Engine/Source/Graphics \
+    $(POLYPHASE_PATH)/Engine/Source/Input \
+    $(POLYPHASE_PATH)/Engine/Source/Audio \
+    $(POLYPHASE_PATH)/Engine/Source/Network \
+    $(POLYPHASE_PATH)/Engine/Source/Network/Http \
+    $(POLYPHASE_PATH)/Engine/Source/Network/Http/Backends \
+    $(POLYPHASE_PATH)/Engine/Source/Serial/Stub \
+    $(POLYPHASE_PATH)/Engine/Source/LuaBindings \
+    $(POLYPHASE_PATH)/External/Lua \
+    $(POLYPHASE_PATH)/External/Vorbis \
+    $(POLYPHASE_PATH)/External/IrrXML \
+    $(POLYPHASE_PATH)/External/Bullet/BulletCollision/BroadphaseCollision \
+    $(POLYPHASE_PATH)/External/Bullet/BulletCollision/CollisionDispatch \
+    $(POLYPHASE_PATH)/External/Bullet/BulletCollision/CollisionShapes \
+    $(POLYPHASE_PATH)/External/Bullet/BulletCollision/Gimpact \
+    $(POLYPHASE_PATH)/External/Bullet/BulletCollision/NarrowPhaseCollision \
+    $(POLYPHASE_PATH)/External/Bullet/BulletDynamics/Character \
+    $(POLYPHASE_PATH)/External/Bullet/BulletDynamics/ConstraintSolver \
+    $(POLYPHASE_PATH)/External/Bullet/BulletDynamics/Dynamics \
+    $(POLYPHASE_PATH)/External/Bullet/BulletDynamics/Featherstone \
+    $(POLYPHASE_PATH)/External/Bullet/BulletDynamics/MLCPSolvers \
+    $(POLYPHASE_PATH)/External/Bullet/BulletDynamics/Vehicle \
+    $(POLYPHASE_PATH)/External/Bullet/LinearMath \
+    $(POLYPHASE_PATH)/External/recastnavigation/Recast/Source \
+    $(POLYPHASE_PATH)/External/recastnavigation/Detour/Source \
+    $(ADDON_WEB_RUNTIME) \
+    $(ADDON_WEB_RUNTIME)/Graphics_WebGPU \
+    $(PROJECT_ROOT)/Source \
+    $(ADDON_SOURCES)
+
+# ---- Include path -----------------------------------------------------------
+INCDIR = \
+    $(PROJECT_ROOT)/Generated \
+    $(ADDON_WEB_RUNTIME) \
+    $(ADDON_WEB_RUNTIME)/Graphics_WebGPU \
+    $(POLYPHASE_PATH)/Engine/Source \
+    $(POLYPHASE_PATH)/Engine/Source/Engine \
+    $(POLYPHASE_PATH)/External \
+    $(POLYPHASE_PATH)/External/Bullet \
+    $(POLYPHASE_PATH)/External/Lua \
+    $(POLYPHASE_PATH)/External/glm \
+    $(POLYPHASE_PATH)/External/Vorbis \
+    $(POLYPHASE_PATH)/External/Assimp/contrib/rapidjson \
+    $(POLYPHASE_PATH)/External/recastnavigation/Recast/Include \
+    $(POLYPHASE_PATH)/External/recastnavigation/Detour/Include \
+    $(POLYPHASE_PATH)/Engine/External/PolyVox/include \
+    $(ADDON_INCDIR)
+
+# ---- Object list ------------------------------------------------------------
+# Flat-basename objects in CWD (Intermediate/WebGPU); VPATH resolves the original
+# source dir. Two same-basename files in different dirs would collide; the
+# engine's subsystem files use distinct names so this is safe today.
+CPPFILES := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+CFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+
+# Pull in ONLY the embedded-scripts blob from Generated/. Lua scripts ship
+# embedded (nothing copies loose Scripts/ into the MEMFS bundle when the
+# profile is Static+Pak); EmbeddedAssets.cpp stays out — assets load from the
+# MEMFS-preloaded Content.pak / loose tree at runtime.
+ifneq ($(wildcard $(PROJECT_ROOT)/Generated/EmbeddedScripts.cpp),)
+CPPFILES += EmbeddedScripts.cpp
+endif
+
+# Engine-target addon registrar + any other generated CPP from AddonInject.mk.
+CPPFILES += $(ADDON_CPPFILES_EXTRA)
+
+VPATH := $(SOURCES) $(PROJECT_ROOT)/Generated
+OBJS  := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o)
+
+# ---- Flags ------------------------------------------------------------------
+# Variant-2 platform-extension flag + Web-native macros.
+#
+#  POLYPHASE_ADDON_INT32_IS_INT — under emcc/wasm32, int32_t IS int; without
+#    this the engine's Datum layer takes the "int32_t is long" arm and
+#    overload resolution breaks (same trap as 3DS, see Datum.h).
+#  INPUT_*_SUPPORT=1 — the engine's InputConstants.h fallback arm for addon
+#    platforms is gamepad-only; the browser has keyboard/mouse/touch/gamepad,
+#    so define all four (the fallback arm's #ifndef guards let these win).
+#  AUDIO_ANALYSIS_ENABLED=0 — visualizer FFT machinery off for milestone 1.
+OPT               ?= -O2
+INITIAL_MEMORY_MB ?= 256
+
+DEFINES = \
+    -DPOLYPHASE_PLATFORM_ADDON=1 \
+    -DPLATFORM_WEB=1 \
+    -DAPI_WEBGPU=1 \
+    -DEDITOR=0 \
+    -DLUA_ENABLED=1 \
+    -DGLM_FORCE_RADIANS \
+    -DLOGGING_ENABLED=1 \
+    -DAUDIO_ANALYSIS_ENABLED=0 \
+    -DPOLYPHASE_ADDON_INT32_IS_INT \
+    -DINPUT_KEYBOARD_SUPPORT=1 \
+    -DINPUT_MOUSE_SUPPORT=1 \
+    -DINPUT_TOUCH_SUPPORT=1 \
+    -DINPUT_GAMEPAD_SUPPORT=1 \
+    $(ADDON_DEFINES)
+
+INCFLAGS = $(addprefix -I,$(INCDIR))
+
+# -fno-exceptions/-fno-rtti match the other console targets and keep the wasm
+# small. Lua is C and uses longjmp; emscripten's default
+# -sSUPPORT_LONGJMP=emscripten handles that with no extra flags.
+#
+# --use-port=emdawnwebgpu — Dawn's WebGPU bindings (<webgpu/webgpu.h> + JS
+#   glue). This is the ONLY supported WebGPU path on emscripten >= 4.x
+#   (-sUSE_WEBGPU was removed and hard-errors). The port must be passed at
+#   BOTH compile and link; the first build downloads the pinned
+#   emdawnwebgpu_pkg zip into the emscripten cache (network required once).
+#   Only the graphics TU includes webgpu.h, but the flag is harmless on the
+#   rest and keeping it in COMMONFLAGS avoids a special-case rule.
+WEBGPU_PORT = --use-port=emdawnwebgpu
+
+COMMONFLAGS = $(OPT) -Wall -Wno-unused-parameter -Wno-unused-variable $(WEBGPU_PORT) $(DEFINES) $(INCFLAGS)
+CXXFLAGS    = $(COMMONFLAGS) -fno-exceptions -fno-rtti -std=gnu++17
+CFLAGS      = $(COMMONFLAGS) -std=gnu11
+
+# Link flags:
+#  --use-port=emdawnwebgpu    — links the port's JS library + wasm lib; the
+#                               browser WebGPU API replaces WebGL entirely
+#                               (no -sMIN/MAX_WEBGL_VERSION here).
+#  -sALLOW_MEMORY_GROWTH      — INITIAL_MEMORY is a floor, not a cap.
+#  -sSTACK_SIZE=2MB           — wasm default is 64 KB; the engine's init path
+#                               (Bullet, asset loads) wants headroom (the DC
+#                               port needed 512 KB+).
+#  -sENVIRONMENT=web          — no node/worker glue; single-threaded browser.
+#  -sEXIT_RUNTIME=0           — main() returns after emscripten_set_main_loop;
+#                               the runtime must keep living.
+#  -sFORCE_FILESYSTEM=1       — the module itself only fopens (no link-time
+#                               --preload-file), so DCE would strip the FS glue
+#                               the external <name>.data.js loader needs.
+#  -lopenal                   — emscripten's built-in OpenAL over Web Audio;
+#                               Audio_Web.cpp drives it single-threaded.
+#  --shell-file               — the addon's HTML shell (canvas + status +
+#                               POLYPHASE_DATA_SCRIPT marker for PostPackage).
+# No -pthread, no -sASYNCIFY: the engine's Update() is a clean non-blocking
+# frame and all file I/O is synchronous MEMFS.
+LDFLAGS = \
+    -sWASM=1 \
+    $(WEBGPU_PORT) \
+    -sALLOW_MEMORY_GROWTH=1 \
+    -sINITIAL_MEMORY=$(INITIAL_MEMORY_MB)MB \
+    -sSTACK_SIZE=2MB \
+    -sENVIRONMENT=web \
+    -sEXIT_RUNTIME=0 \
+    -sFORCE_FILESYSTEM=1 \
+    -lopenal \
+    --shell-file $(ADDON_WEB_RUNTIME)/shell.html
+
+# ---- Rules ------------------------------------------------------------------
+.DEFAULT_GOAL := all
+all: stage
+
+$(TARGET).html: $(OBJS) $(ADDON_WEB_RUNTIME)/shell.html
+	$(EMCXX) -o $@ $(OBJS) $(LDFLAGS) $(ADDON_LIBDIR) $(ADDON_LIBS)
+
+%.o: %.cpp
+	$(EMCXX) $(CXXFLAGS) -c $< -o $@
+
+%.o: %.c
+	$(EMCC) $(CFLAGS) -c $< -o $@
+
+# Stage the emcc triple where the addon's GetCompiledBinaryPath expects it
+# (<projectDir>/Build/WebGPU/<name>.html). PostPackage copies the .js/.wasm into
+# the packaged dir and assembles index.html + the MEMFS data bundle.
+stage: $(TARGET).html
+	@mkdir -p $(PROJECT_ROOT)/Build/WebGPU
+	@cp $(TARGET).html $(TARGET).js $(TARGET).wasm $(PROJECT_ROOT)/Build/WebGPU/
+	@echo "Staged $(PROJECT_ROOT)/Build/WebGPU/$(TARGET).html (+ .js/.wasm)"
+
+clean:
+	@rm -f ./*.o ./*.d ./*.html ./*.js ./*.wasm
+
+cleanstage:
+	@rm -rf $(PROJECT_ROOT)/Build/WebGPU
+
+.PHONY: all stage clean cleanstage

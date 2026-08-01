@@ -1,0 +1,156 @@
+<!doctype html>
+<!--
+  Polyphase Web (WebGPU) shell — consumed by emcc via `--shell-file`
+  (Makefile_WebGPU).
+
+  {{{ SCRIPT }}} is replaced by emcc with the <script> tag for the generated
+  module JS. The POLYPHASE_DATA_SCRIPT comment ABOVE it is replaced by the
+  addon's PostPackage with the <script> tag for the file_packager MEMFS bundle
+  (<name>.data.js) — order matters: the data loader must register its
+  run-dependency before the module script evaluates.
+
+  WebGPU device acquisition is async but the engine's GFX_Initialize is
+  synchronous, so the device is requested in Module.preRun behind a run
+  dependency: main() does not start until the device exists (or never starts,
+  with a visible message, when the browser has no WebGPU). The wasm side picks
+  the device up via emdawnwebgpu's Module.preinitializedWebGPUDevice /
+  emscripten_webgpu_get_device() path.
+-->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>Polyphase</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #101014;
+        }
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            outline: none;
+            /* Backing-store size is set from C++ (device pixels); CSS keeps it
+               filling the viewport. */
+        }
+        #status {
+            position: absolute;
+            left: 0; right: 0;
+            top: 45%;
+            text-align: center;
+            font: 14px/1.6 system-ui, sans-serif;
+            color: #9aa0b0;
+            pointer-events: none;
+            transition: opacity 0.4s;
+        }
+        #status.hidden { opacity: 0; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    <div id="status">Loading&hellip;</div>
+
+    <!-- Multiplayer relay. Browsers have no UDP, so the engine's NET_* layer
+         tunnels datagrams through a WebSocket to the relay in
+         Packages/com.polyphase.build.target.webgpu/Tools/relay/.
+
+         PostPackage replaces the marker below with a window.POLYPHASE_RELAY_URL
+         assignment, taken from the "Network Relay URL" profile option in Target
+         Options. When that option is empty the marker is simply removed, so
+         NET_IsActive() returns false and networking is off.
+
+         HTTP does NOT need this; it uses fetch() directly.
+
+         NOTE: a raw `make -f Makefile_WebGPU` build skips PostPackage, so the
+         marker survives as an inert comment and networking stays off. Package
+         from the editor (or hand-edit the staged .html) to enable it. -->
+    <!--POLYPHASE_RELAY_SCRIPT-->
+
+    <script>
+        var statusElement = document.getElementById('status');
+        var Module = {
+            canvas: document.getElementById('canvas'),
+            print: function(text) { console.log(text); },
+            printErr: function(text) { console.error(text); },
+            setStatus: function(text) {
+                if (!statusElement) return;
+                if (text) {
+                    statusElement.textContent = text;
+                    statusElement.classList.remove('hidden');
+                } else {
+                    statusElement.classList.add('hidden');
+                }
+            },
+            preRun: [function() {
+                // Acquire the WebGPU device BEFORE main() runs. The run
+                // dependency is only removed on success; on failure the status
+                // line explains why nothing rendered, which beats a silent
+                // black canvas.
+                if (!navigator.gpu) {
+                    Module.setStatus('This browser does not support WebGPU. ' +
+                        'Use Chrome/Edge 113+, Safari 18+, or Firefox 141+.');
+                    return; // dependency never added -> emscripten aborts cleanly on error paths
+                }
+                addRunDependency('polyphase-webgpu-device');
+                navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+                    .then(function(adapter) {
+                        if (!adapter) throw new Error('no adapter');
+                        return adapter.requestDevice();
+                    })
+                    .then(function(device) {
+                        // emdawnwebgpu's emscripten_webgpu_get_device() reads
+                        // this exact Module field.
+                        Module.preinitializedWebGPUDevice = device;
+                        // Preferred swapchain format, read by the C++ side
+                        // (bgra8unorm on desktop, rgba8unorm on Android).
+                        Module.polyphasePreferredFormat =
+                            navigator.gpu.getPreferredCanvasFormat();
+                        // Device loss: reload is the only sane recovery for a
+                        // full engine (mirrors the WebGL2 shell's context-lost
+                        // handler).
+                        device.lost.then(function(info) {
+                            if (info.reason !== 'destroyed') {
+                                Module.setStatus('GPU device lost (' + info.message + '). Reloading.');
+                                location.reload();
+                            }
+                        });
+                        removeRunDependency('polyphase-webgpu-device');
+                    })
+                    .catch(function(err) {
+                        Module.setStatus('WebGPU init failed: ' + err.message);
+                        // Dependency intentionally not removed -- startup halts
+                        // with the message on screen.
+                    });
+            }]
+        };
+        Module.setStatus('Downloading…');
+        window.onerror = function(message) {
+            Module.setStatus('Error: ' + message);
+        };
+
+        // Autoplay-policy fallback: emscripten's OpenAL resumes its
+        // AudioContext on the first user gesture automatically; this belt-and-
+        // suspenders poke covers browsers where that hook misses.
+        (function() {
+            function resumeAudio() {
+                try {
+                    if (typeof Module.SDL2 === 'undefined' && Module.openalContext) {
+                        Module.openalContext.resume();
+                    }
+                } catch (e) {}
+                window.removeEventListener('pointerdown', resumeAudio);
+                window.removeEventListener('keydown', resumeAudio);
+            }
+            window.addEventListener('pointerdown', resumeAudio);
+            window.addEventListener('keydown', resumeAudio);
+        })();
+    </script>
+    <!--POLYPHASE_DATA_SCRIPT-->
+    {{{ SCRIPT }}}
+</body>
+</html>

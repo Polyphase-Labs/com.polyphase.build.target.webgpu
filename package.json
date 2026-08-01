@@ -1,0 +1,22 @@
+{
+    "name": "com.polyphase.build.target.webgpu",
+    "author": "Justin Jaro",
+    "description": "Adds a 'Web (WebGPU)' build target to the Polyphase editor. Compiles the engine + Runtime/Web into a single-threaded WebAssembly module with Emscripten, renders through a WebGPU backend (Dawn's emdawnwebgpu port, WGSL ubershaders), packages cooked content into a MEMFS preload bundle with file_packager.py, and serves the result locally for Build & Run. Requires a WebGPU-capable browser (Chrome/Edge 113+, Safari 18+, Firefox 141+). Output runs from any static host - no SharedArrayBuffer / COOP-COEP headers required.",
+    "version": "1.0.0",
+    "native": {
+        "target": "editor",
+        "sourceDir": "Source",
+        "binaryName": "com.polyphase.build.target.webgpu",
+        "entrySymbol": "PolyphasePlugin_GetDesc",
+        "apiVersion": 4,
+        "resolveMode": "source",
+        "buildTargets": [
+            {
+                "id": "web.webgpu",
+                "displayName": "Web (WebGPU)",
+                "category": "Web"
+            }
+        ],
+        "binaries": []
+    }
+}
