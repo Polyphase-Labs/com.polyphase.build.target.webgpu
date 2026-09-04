@@ -48,7 +48,8 @@ struct MeshUniforms {
     fogColor   : vec4<f32>,          // rgb colour, a intensity
     camPos     : vec4<f32>,
     pointPosRadius : array<vec4<f32>, 8>,   // xyz pos, w radius
-    pointColor     : array<vec4<f32>, 8>,
+    pointColor     : array<vec4<f32>, 8>,   // rgb color, a cosInner (spot only)
+    pointSpot      : array<vec4<f32>, 8>,   // xyz spot dir, w cosOuter (-2 = plain point)
 }
 
 @group(0) @binding(0) var<uniform> u : MeshUniforms;
@@ -103,9 +104,15 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
             let toL   = u.pointPosRadius[i].xyz - in.worldPos;
             let dist  = length(toL);
             let t     = clamp(dist / u.pointPosRadius[i].w, 0.0, 1.0);
-            let atten = 1.0 - t;
+            var atten = 1.0 - t;
             if (atten > 0.0) {
                 let l = toL / max(dist, 0.0001);
+                if (u.pointSpot[i].w > -1.5) {
+                    // Spot cone: -l points from the light to the surface.
+                    let coneDot = dot(u.pointSpot[i].xyz, -l);
+                    let denom = max(u.pointColor[i].a - u.pointSpot[i].w, 0.0001);
+                    atten = atten * clamp((coneDot - u.pointSpot[i].w) / denom, 0.0, 1.0);
+                }
                 dyn += max(dot(n, l), 0.0) * atten * u.pointColor[i].rgb;
             }
         }

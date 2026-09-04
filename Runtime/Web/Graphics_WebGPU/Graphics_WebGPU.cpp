@@ -275,6 +275,8 @@ namespace
     int       sNumPointLights = 0;
     glm::vec4 sPointLightPosRadius[kMaxPointLights];
     glm::vec3 sPointLightColor[kMaxPointLights];
+    glm::vec4 sPointLightSpot[kMaxPointLights];      // xyz spot dir, w cosOuter (-2 = plain point)
+    float     sPointLightSpotInner[kMaxPointLights]; // cosInner (spot only)
     float     sColorScale = 1.0f;
 
     FogSettings sFog;
@@ -300,9 +302,10 @@ namespace
         glm::vec4 fogColor;
         glm::vec4 camPos;
         glm::vec4 pointPosRadius[8];
-        glm::vec4 pointColor[8];
+        glm::vec4 pointColor[8];     // rgb color, a cosInner (spot only)
+        glm::vec4 pointSpot[8];      // xyz spot dir, w cosOuter (-2 = plain point)
     };
-    static_assert(sizeof(MeshUniformsCPU) == 560, "must match WGSL MeshUniforms");
+    static_assert(sizeof(MeshUniformsCPU) == 688, "must match WGSL MeshUniforms");
     static_assert(offsetof(MeshUniformsCPU, modes) == 192, "layout drift");
     static_assert(offsetof(MeshUniformsCPU, pointPosRadius) == 304, "layout drift");
     static_assert(sizeof(MeshUniformsCPU) <= kUniformBindingSize, "binding too small");
@@ -907,7 +910,8 @@ namespace
         for (int i = 0; i < sNumPointLights; ++i)
         {
             u.pointPosRadius[i] = sPointLightPosRadius[i];
-            u.pointColor[i] = glm::vec4(sPointLightColor[i], 0.0f);
+            u.pointColor[i] = glm::vec4(sPointLightColor[i], sPointLightSpotInner[i]);
+            u.pointSpot[i] = sPointLightSpot[i];
         }
     }
 
@@ -1323,6 +1327,22 @@ void GFX_BeginRenderPass(RenderPassId pass)
                     glm::vec4(ld.mPosition, glm::max(ld.mRadius, 0.0001f));
                 sPointLightColor[sNumPointLights] =
                     glm::vec3(ld.mColor) * ld.mIntensity;
+
+                if (ld.mType == LightType::Spot)
+                {
+                    glm::vec3 spotDir = ld.mDirection;
+                    if (glm::length(spotDir) > 0.0001f) spotDir = glm::normalize(spotDir);
+                    float cosOuter = cosf(glm::radians(glm::clamp(ld.mOuterConeAngle, 0.1f, 89.9f)));
+                    float cosInner = cosf(glm::radians(glm::clamp(ld.mInnerConeAngle, 0.0f, 89.0f)));
+                    sPointLightSpot[sNumPointLights] = glm::vec4(spotDir, cosOuter);
+                    sPointLightSpotInner[sNumPointLights] = cosInner;
+                }
+                else
+                {
+                    sPointLightSpot[sNumPointLights] = glm::vec4(0.0f, 0.0f, -1.0f, -2.0f);
+                    sPointLightSpotInner[sNumPointLights] = 1.0f;
+                }
+
                 ++sNumPointLights;
             }
         }

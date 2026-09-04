@@ -96,6 +96,37 @@ Identical to the WebGL2 addon — the runtime files are the same:
   `wss://`. The relay is a UDP proxy — keep it on loopback/private ranges
   unless you know what you're doing. See `Tools/relay/README.md`.
 
+## WebSocket
+
+`WebSocket.Connect` / `SendText` / `SendBinary` / `GetPacket` all work and
+`WebSocket.IsAvailable()` returns true. No configuration, and **no relay** -
+this is a general-purpose client for talking to your own dedicated server, and
+a server that speaks WebSocket serves native and browser clients uniformly. The
+relay below is a separate thing entirely: it exists only to tunnel the engine's
+UDP multiplayer protocol out of a browser.
+
+`Runtime/Web/Ws_Web.cpp` supplies the whole `WebSocket::` namespace against the
+browser `WebSocket` global, and the Makefile adds
+`-DPOLYPHASE_WS_PROVIDED_BY_ADDON=1` so the engine's own
+`Network/WebSocketClient.cpp` compiles to nothing. That define is opt-in: a
+build-target package that omits it still links and simply reports WebSocket as
+unavailable.
+
+Browser-specific behaviour:
+
+- `wss://` is free, and **required** from an `https://` page - a `ws://` URL
+  there is blocked as mixed content. Never define `POLYPHASE_WS_DOWNGRADE_WSS`
+  for a web target.
+- `options.headers` is impossible; the `WebSocket` constructor takes a URL and a
+  subprotocol list and nothing else. It is ignored with a one-time warning - put
+  the token in the URL query or send it as the first message.
+- `options.protocols` maps to the constructor's protocol list, and
+  `ws:GetSelectedProtocol()` reports `WebSocket.protocol`.
+- Close codes are constrained by the browser to `1000` or `3000`-`4999`;
+  anything else is coerced to `1000`.
+
+See the engine's `Documentation/Lua/Networking/WebSocket.md` for the full API.
+
 ## Build & Run
 
 The editor's **Build & Run** serves `Packaged/web.webgpu/` on
