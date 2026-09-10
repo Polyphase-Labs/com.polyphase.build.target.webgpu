@@ -101,6 +101,7 @@ SOURCES = \
     $(POLYPHASE_PATH)/Engine/Source/Engine/UI \
     $(POLYPHASE_PATH)/Engine/Source/Engine/Timeline \
     $(POLYPHASE_PATH)/Engine/Source/Engine/Timeline/Tracks \
+    $(POLYPHASE_PATH)/Engine/Source/Engine/Utils \
     $(POLYPHASE_PATH)/Engine/Source/Plugins \
     $(POLYPHASE_PATH)/Engine/Source/System \
     $(POLYPHASE_PATH)/Engine/Source/Graphics \
@@ -218,8 +219,15 @@ INCFLAGS = $(addprefix -I,$(INCDIR))
 WEBGPU_PORT = --use-port=emdawnwebgpu
 
 COMMONFLAGS = $(OPT) -Wall -Wno-unused-parameter -Wno-unused-variable $(WEBGPU_PORT) $(DEFINES) $(INCFLAGS)
-CXXFLAGS    = $(COMMONFLAGS) -fno-exceptions -fno-rtti -std=gnu++17
-CFLAGS      = $(COMMONFLAGS) -std=gnu11
+# -MMD -MP: emit a <obj>.d header-dependency file next to every object and
+# pull them all back in (see the -include near the end). Without this, make
+# only compares each .o against its own .cpp, so an engine header edit (a
+# struct gaining a field, a function gaining a defaulted parameter) leaves
+# every other TU stale: "undefined reference to <old signature>" at link
+# time, or objects that link but read a struct with the wrong layout.
+DEPFLAGS = -MMD -MP
+CXXFLAGS    = $(COMMONFLAGS) -fno-exceptions -fno-rtti -std=gnu++17 $(DEPFLAGS)
+CFLAGS      = $(COMMONFLAGS) -std=gnu11 $(DEPFLAGS)
 
 # Link flags:
 #  --use-port=emdawnwebgpu    — links the port's JS library + wasm lib; the
@@ -279,5 +287,9 @@ clean:
 
 cleanstage:
 	@rm -rf $(PROJECT_ROOT)/Build/WebGPU
+
+# Header dependencies written by -MMD (see DEPFLAGS). Non-fatal so the first
+# build, before any .d exists, still works.
+-include $(OBJS:.o=.d)
 
 .PHONY: all stage clean cleanstage
